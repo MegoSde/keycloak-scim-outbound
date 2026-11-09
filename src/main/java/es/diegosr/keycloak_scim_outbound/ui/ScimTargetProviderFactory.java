@@ -1,6 +1,7 @@
 package es.diegosr.keycloak_scim_outbound.ui;
 
 import es.diegosr.keycloak_scim_outbound.ldapsync.ScimMembershipSync;
+import es.diegosr.keycloak_scim_outbound.sync.ScimUserSync;
 
 import org.keycloak.component.ComponentModel;
 import org.keycloak.component.ComponentValidationException;
@@ -24,8 +25,8 @@ import java.util.List;
  *
  * Implements ImportSynchronization so that clicking "Synchronize all users" /
  * "Synchronize changed users" on this provider's page in the admin console triggers
- * an immediate sweep of pending LDAP-driven membership changes for THIS target only,
- * instead of waiting for the next 5-minute timer tick.
+ * a full outbound user sync or a pending LDAP membership sweep, respectively,
+ * scoped to THIS target only.
  */
 public class ScimTargetProviderFactory implements UserStorageProviderFactory<ScimTargetProvider>, ImportSynchronization {
 
@@ -173,7 +174,7 @@ public class ScimTargetProviderFactory implements UserStorageProviderFactory<Sci
     public SynchronizationResult sync(KeycloakSessionFactory sessionFactory, String realmId, UserStorageProviderModel model) {
         info("Manual 'Synchronize all users' triggered for target=%s (componentId=%s) realm=%s",
                 model.getName(), model.getId(), realmId);
-        return runSweep(sessionFactory, realmId, model);
+        return runFullSync(sessionFactory, realmId, model);
     }
 
     @Override
@@ -183,6 +184,36 @@ public class ScimTargetProviderFactory implements UserStorageProviderFactory<Sci
         // We don't have an incremental changed-users query for our own attribute state,
         // so we just run the same full pending-entries sweep, scoped to this component.
         return runSweep(sessionFactory, realmId, model);
+    }
+
+    private SynchronizationResult runFullSync(KeycloakSessionFactory factory, String realmId, ComponentModel model) {
+        SynchronizationResult result = new SynchronizationResult();
+        ScimUserSync sync = new ScimUserSync();
+        try {
+            int first = 0;
+            while (true) {
+                final int offset = first;
+                ScimUserSync.Page page = KeycloakModelUtils.runJobInTransactionWithResult(factory, session -> {
+                    RealmModel realm = session.realms().getRealm(realmId);
+                    if (realm == null) throw new IllegalStateException("Realm no longer exists");
+                    session.getContext().setRealm(realm);
+                    ComponentModel target = realm.getComponent(model.getId());
+                    if (target == null || !ID.equals(target.getProviderId())) {
+                        throw new IllegalStateException("SCIM target no longer exists");
+                    }
+                    return sync.syncPage(session, realm, target, offset);
+                });
+                result.add(page.result());
+                if (page.scanned() < ScimUserSync.PAGE_SIZE) break;
+                first += page.scanned();
+            }
+        } catch (Exception e) {
+            result.increaseFailed();
+            err("Full sync stopped for target=%s (%s)", model.getId(), e.getClass().getSimpleName());
+        }
+        info("Full sync for target=%s: added=%d updated=%d failed=%d", model.getId(),
+                result.getAdded(), result.getUpdated(), result.getFailed());
+        return result;
     }
 
     private SynchronizationResult runSweep(KeycloakSessionFactory sessionFactory, String realmId, ComponentModel model) {

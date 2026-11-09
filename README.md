@@ -216,7 +216,7 @@ If group membership is managed directly in Keycloak (e.g. via the Admin Console 
 
 ### What does it do?
 
-During every LDAP sync run, `LdapSyncNotifierMapper` compares each user's current group membership (as resolved from LDAP) against the last recorded state. When it detects a change it writes a small pending marker to a local Keycloak user attribute. A background sweep — running every **5 minutes** via Keycloak's built-in timer, or immediately when you click **Synchronize** on the SCIM outbound provider — reads those markers and pushes the corresponding SCIM provisioning or deprovisioning calls.
+During every LDAP sync run, `LdapSyncNotifierMapper` compares each user's current group membership (as resolved from LDAP) against the last recorded state. When it detects a change it writes a small pending marker to a local Keycloak user attribute. A background sweep — running every **5 minutes** via Keycloak's built-in timer, or immediately when you click **Synchronize changed users** on the SCIM outbound provider — reads those markers and pushes the corresponding SCIM provisioning or deprovisioning calls.
 
 > ℹ️ This mapper handles **LDAP-driven membership changes for user provisioning** (`/Users`). It does not manage SCIM `/Groups` resources; group objects in the SCIM target are not created or modified.
 
@@ -234,12 +234,29 @@ During every LDAP sync run, `LdapSyncNotifierMapper` compares each user's curren
 
 To check or adjust the order, go to **User Federation → your LDAP provider → Mappers** and verify that `group-ldap-mapper` appears above `LdapSyncNotifierMapper` in the list.
 
-### The 5-minute sweep and manual sync
+### Synchronize all users
+
+On the SCIM outbound provider in **User Federation**, select **Synchronize all users**
+to provision existing realm users, including users with no prior events or LDAP pending
+markers. This runs only for the selected SCIM target and reads local and federated users
+in pages of 100, with a separate Keycloak transaction per page. A full SCIM sync does not
+trigger an LDAP import; run your LDAP provider's import first if that is needed.
+
+The provider's **Filter Group** and **userNameStrategy** apply, just as for user events.
+Service accounts are skipped. Disabled users are synchronized with `active=false`.
+Users are resolved by `externalId`, then `userName`: missing users are created, existing
+users are updated. Repeating the sync updates existing users rather than creating duplicates.
+The result reports created, updated, and failed users; one user's failure does not stop
+other users. Users outside the group filter are skipped. This operation does not delete
+remote users, reconcile removals, or seed SCIM groups. Avoid editing realm users or the
+provider configuration during a full sync, since pages do not share a single snapshot.
+
+### The 5-minute sweep and changed-user sync
 
 Pending membership changes are flushed in two ways:
 
 - **Automatically** — a background task runs every 5 minutes and processes all pending entries across all realms and SCIM targets. No action is required.
-- **On demand** — clicking **Synchronize all users** or **Synchronize changed users** on the SCIM outbound provider in User Federation triggers an immediate flush for that specific target.
+- **On demand** — clicking **Synchronize changed users** on the SCIM outbound provider in User Federation triggers an immediate flush for that specific target. This processes pending LDAP membership markers; it is not a timestamp-based scan of all user changes.
 
 If a SCIM push fails (e.g. the target is temporarily unreachable), the pending marker is left in place and the push is retried on the next sweep.
 
