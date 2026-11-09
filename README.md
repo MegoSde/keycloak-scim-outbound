@@ -234,13 +234,19 @@ During every LDAP sync run, `LdapSyncNotifierMapper` compares each user's curren
 
 To check or adjust the order, go to **User Federation → your LDAP provider → Mappers** and verify that `group-ldap-mapper` appears above `LdapSyncNotifierMapper` in the list.
 
-### Synchronize all users
+### Manual and periodic full sync
 
 On the SCIM outbound provider in **User Federation**, select **Synchronize all users**
 to provision existing realm users, including users with no prior events or LDAP pending
 markers. This runs only for the selected SCIM target and reads local and federated users
 in pages of 100, with a separate Keycloak transaction per page. A full SCIM sync does not
 trigger an LDAP import; run your LDAP provider's import first if that is needed.
+
+To run the same full sync automatically, enable **Periodic full sync** on this SCIM
+provider, enter the **Sync period** in seconds, and save. Keycloak's scheduler invokes
+the same full-sync implementation as **Synchronize all users**, including users without
+prior events. Disable **Periodic full sync** to stop the scheduled runs. This schedule is
+separate from the five-minute LDAP pending-membership sweep described below.
 
 The provider's **Filter Group** and **userNameStrategy** apply, just as for user events.
 Service accounts are skipped. Disabled users are synchronized with `active=false`.

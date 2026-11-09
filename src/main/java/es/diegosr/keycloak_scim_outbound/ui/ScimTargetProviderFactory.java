@@ -165,21 +165,21 @@ public class ScimTargetProviderFactory implements UserStorageProviderFactory<Sci
         }
     }
 
-    /* ===== ImportSynchronization: triggered by the "Synchronize" buttons in the admin console =====
+    /* ===== ImportSynchronization: shared by manual actions and Keycloak periodic sync =====
      * NOTE: Keycloak's ImportSynchronization interface takes UserStorageProviderModel (not the
      * plain ComponentModel) as the last parameter -- see org.keycloak.storage.user.ImportSynchronization
      * in keycloak-server-spi-private for the exact signature. */
 
     @Override
     public SynchronizationResult sync(KeycloakSessionFactory sessionFactory, String realmId, UserStorageProviderModel model) {
-        info("Manual 'Synchronize all users' triggered for target=%s (componentId=%s) realm=%s",
+        info("Full user sync triggered for target=%s (componentId=%s) realm=%s",
                 model.getName(), model.getId(), realmId);
         return runFullSync(sessionFactory, realmId, model);
     }
 
     @Override
     public SynchronizationResult syncSince(Date lastSync, KeycloakSessionFactory sessionFactory, String realmId, UserStorageProviderModel model) {
-        info("Manual 'Synchronize changed users' triggered for target=%s (componentId=%s) realm=%s lastSync=%s",
+        info("Changed-user sync triggered for target=%s (componentId=%s) realm=%s lastSync=%s",
                 model.getName(), model.getId(), realmId, lastSync);
         // We don't have an incremental changed-users query for our own attribute state,
         // so we just run the same full pending-entries sweep, scoped to this component.
