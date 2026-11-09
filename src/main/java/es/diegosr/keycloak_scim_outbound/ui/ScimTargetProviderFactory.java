@@ -1,6 +1,8 @@
 package es.diegosr.keycloak_scim_outbound.ui;
 
 import es.diegosr.keycloak_scim_outbound.ldapsync.ScimMembershipSync;
+import es.diegosr.keycloak_scim_outbound.http.ScimTls;
+import es.diegosr.keycloak_scim_outbound.sync.ScimUserSync;
 
 import org.keycloak.component.ComponentModel;
 import org.keycloak.component.ComponentValidationException;
@@ -24,8 +26,8 @@ import java.util.List;
  *
  * Implements ImportSynchronization so that clicking "Synchronize all users" /
  * "Synchronize changed users" on this provider's page in the admin console triggers
- * an immediate sweep of pending LDAP-driven membership changes for THIS target only,
- * instead of waiting for the next 5-minute timer tick.
+ * a full outbound user sync or a pending LDAP membership sweep, respectively,
+ * scoped to THIS target only.
  */
 public class ScimTargetProviderFactory implements UserStorageProviderFactory<ScimTargetProvider>, ImportSynchronization {
 
@@ -36,6 +38,7 @@ public class ScimTargetProviderFactory implements UserStorageProviderFactory<Sci
 
     /** Config keys stored in ComponentModel#getConfig(). */
     public static final String CFG_BASE_URL       = "baseUrl";
+    public static final String CFG_TRUSTED_CERTIFICATES = "trustedCertificatesPem";
     public static final String CFG_TOKEN          = "token";
     public static final String CFG_FILTER_GROUP   = "filterGroup";       // optional
 
@@ -73,6 +76,11 @@ public class ScimTargetProviderFactory implements UserStorageProviderFactory<Sci
             "SCIM Base URL (e.g. https://app.example.com/scim/v2).", true, "SCIM Base URL"),
         prop(ProviderConfigProperty.PASSWORD,     CFG_TOKEN,
             "SCIM Bearer token used to authenticate against the target.", true, "SCIM Token"),
+        prop(ProviderConfigProperty.FILE_TYPE, CFG_TRUSTED_CERTIFICATES,
+            "Optional PEM CA certificate or bundle (max 128 KiB, 16 certificates). When supplied, only these certificates "
+            + "are trusted for this SCIM target. Leave empty for default trust. Private keys are not supported. "
+            + "Clear and save to remove. Changes apply to subsequent SCIM operations without restart.",
+            false, "Trusted SCIM certificates (PEM)"),
         prop(ProviderConfigProperty.STRING_TYPE,  CFG_FILTER_GROUP,
             "Optional group filter. If set, only users in this Keycloak group will be provisioned.", false, "Filter Group (optional)"),
 
@@ -129,6 +137,13 @@ public class ScimTargetProviderFactory implements UserStorageProviderFactory<Sci
             throw new ComponentValidationException("SCIM Base URL must start with http:// or https://");
         }
 
+        String normalizedCertificates;
+        try {
+            normalizedCertificates = ScimTls.normalize(get(model, CFG_TRUSTED_CERTIFICATES, null));
+        } catch (IllegalArgumentException e) {
+            throw new ComponentValidationException(e.getMessage());
+        }
+
         String strategy = get(model, CFG_UNAME_STRATEGY, "username");
         switch (strategy) {
             case "username":
@@ -162,27 +177,60 @@ public class ScimTargetProviderFactory implements UserStorageProviderFactory<Sci
                 }
             }
         }
+        // Normalize only after all validation has succeeded.
+        if (normalizedCertificates.isEmpty()) model.getConfig().remove(CFG_TRUSTED_CERTIFICATES);
+        else model.getConfig().putSingle(CFG_TRUSTED_CERTIFICATES, normalizedCertificates);
     }
 
-    /* ===== ImportSynchronization: triggered by the "Synchronize" buttons in the admin console =====
+    /* ===== ImportSynchronization: shared by manual actions and Keycloak periodic sync =====
      * NOTE: Keycloak's ImportSynchronization interface takes UserStorageProviderModel (not the
      * plain ComponentModel) as the last parameter -- see org.keycloak.storage.user.ImportSynchronization
      * in keycloak-server-spi-private for the exact signature. */
 
     @Override
     public SynchronizationResult sync(KeycloakSessionFactory sessionFactory, String realmId, UserStorageProviderModel model) {
-        info("Manual 'Synchronize all users' triggered for target=%s (componentId=%s) realm=%s",
+        info("Full user sync triggered for target=%s (componentId=%s) realm=%s",
                 model.getName(), model.getId(), realmId);
-        return runSweep(sessionFactory, realmId, model);
+        return runFullSync(sessionFactory, realmId, model);
     }
 
     @Override
     public SynchronizationResult syncSince(Date lastSync, KeycloakSessionFactory sessionFactory, String realmId, UserStorageProviderModel model) {
-        info("Manual 'Synchronize changed users' triggered for target=%s (componentId=%s) realm=%s lastSync=%s",
+        info("Changed-user sync triggered for target=%s (componentId=%s) realm=%s lastSync=%s",
                 model.getName(), model.getId(), realmId, lastSync);
         // We don't have an incremental changed-users query for our own attribute state,
         // so we just run the same full pending-entries sweep, scoped to this component.
         return runSweep(sessionFactory, realmId, model);
+    }
+
+    private SynchronizationResult runFullSync(KeycloakSessionFactory factory, String realmId, ComponentModel model) {
+        SynchronizationResult result = new SynchronizationResult();
+        ScimUserSync sync = new ScimUserSync();
+        try {
+            int first = 0;
+            while (true) {
+                final int offset = first;
+                ScimUserSync.Page page = KeycloakModelUtils.runJobInTransactionWithResult(factory, session -> {
+                    RealmModel realm = session.realms().getRealm(realmId);
+                    if (realm == null) throw new IllegalStateException("Realm no longer exists");
+                    session.getContext().setRealm(realm);
+                    ComponentModel target = realm.getComponent(model.getId());
+                    if (target == null || !ID.equals(target.getProviderId())) {
+                        throw new IllegalStateException("SCIM target no longer exists");
+                    }
+                    return sync.syncPage(session, realm, target, offset);
+                });
+                result.add(page.result());
+                if (page.scanned() < ScimUserSync.PAGE_SIZE) break;
+                first += page.scanned();
+            }
+        } catch (Exception e) {
+            result.increaseFailed();
+            err("Full sync stopped for target=%s (%s)", model.getId(), e.getClass().getSimpleName());
+        }
+        info("Full sync for target=%s: added=%d updated=%d failed=%d", model.getId(),
+                result.getAdded(), result.getUpdated(), result.getFailed());
+        return result;
     }
 
     private SynchronizationResult runSweep(KeycloakSessionFactory sessionFactory, String realmId, ComponentModel model) {

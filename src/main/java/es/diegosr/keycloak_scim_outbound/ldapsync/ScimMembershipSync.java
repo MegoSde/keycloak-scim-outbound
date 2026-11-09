@@ -23,8 +23,8 @@ import java.util.Optional;
  * Invoked from two places:
  *   1. A 5-minute TimerProvider task (ScimEventListenerProviderFactory#postInit),
  *      scanning ALL SCIM targets in ALL realms.
- *   2. ScimTargetProviderFactory#sync / #syncSince (ImportSynchronization), triggered when
- *      an admin clicks "Synchronize all users" / "Synchronize changed users" on a
+ *   2. ScimTargetProviderFactory#syncSince (ImportSynchronization), triggered when
+ *      an admin clicks "Synchronize changed users" on a
  *      specific SCIM outbound federation provider in the console -- scoped to just
  *      that one componentId.
  *
@@ -113,7 +113,14 @@ public final class ScimMembershipSync {
                 continue;
             }
 
-            ScimClient client = new ScimClient(base, token);
+            ScimClient client;
+            try {
+                client = ScimClient.forTarget(target);
+            } catch (IllegalArgumentException e) {
+                err("Target=%s invalid TLS configuration: %s. Pending entries retained.", target.getName(), e.getMessage());
+                failures += candidates.size();
+                continue;
+            }
 
             for (UserModel user : candidates.values()) {
                 usersScanned++;
