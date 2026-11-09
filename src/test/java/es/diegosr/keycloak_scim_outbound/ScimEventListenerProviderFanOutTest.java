@@ -128,7 +128,7 @@ class ScimEventListenerProviderFanOutTest {
                 "https://target-b.example/scim/v2", targetB);
 
         ScimEventListenerProvider provider = new ScimEventListenerProvider(
-                session, (baseUrl, token) -> clients.get(baseUrl), () -> 1_000L);
+                session, target -> clients.get(ScimTargetProviderFactory.get(target, ScimTargetProviderFactory.CFG_BASE_URL, null)), () -> 1_000L);
         return new Fixture(provider, targetA, targetB);
     }
 

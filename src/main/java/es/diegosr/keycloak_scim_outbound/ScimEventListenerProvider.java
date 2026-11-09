@@ -25,7 +25,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.BiFunction;
+import java.util.function.Function;
 import java.util.function.LongSupplier;
 
 /**
@@ -41,7 +41,7 @@ public class ScimEventListenerProvider implements EventListenerProvider {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private final KeycloakSession session;
-    private final BiFunction<String, String, ScimClient> scimClientFactory;
+    private final Function<ComponentModel, ScimClient> scimClientFactory;
     private final LongSupplier clock;
 
     private static final Set<EventType> USER_EVENTS_OF_INTEREST = EnumSet.of(
@@ -65,15 +65,24 @@ public class ScimEventListenerProvider implements EventListenerProvider {
     private record MembershipDebounceEntry(OperationType operation, long timestamp) { }
 
     public ScimEventListenerProvider(KeycloakSession session) {
-        this(session, ScimClient::new, () -> Instant.now().toEpochMilli());
+        this(session, ScimClient::forTarget, () -> Instant.now().toEpochMilli());
     }
 
     ScimEventListenerProvider(KeycloakSession session,
-                              BiFunction<String, String, ScimClient> scimClientFactory,
+                              Function<ComponentModel, ScimClient> scimClientFactory,
                               LongSupplier clock) {
         this.session = session;
         this.scimClientFactory = scimClientFactory;
         this.clock = clock;
+    }
+
+    private ScimClient clientForTarget(ComponentModel target) {
+        try {
+            return scimClientFactory.apply(target);
+        } catch (IllegalArgumentException e) {
+            logErr("SCIM", target.getName(), "Invalid TLS configuration: %s. Skipping target.", e.getMessage());
+            return null;
+        }
     }
 
     /* ===== User events ===== */
@@ -155,7 +164,8 @@ public class ScimEventListenerProvider implements EventListenerProvider {
                     continue;
                 }
 
-                final ScimClient client = scimClientFactory.apply(base, token);
+                final ScimClient client = clientForTarget(t);
+                if (client == null) continue;
                 final OperationType op  = adminEvent.getOperationType();
                 final long now = clock.getAsLong();
                 if (shouldDebounceMembershipEvent(
@@ -272,7 +282,8 @@ public class ScimEventListenerProvider implements EventListenerProvider {
                 }
                 if (!"true".equalsIgnoreCase(get(t, CFG_SYNC_GROUPS, "false"))) continue;
                 if (!isGroupAllowedForSync(t, groupName)) continue;
-                final ScimClient client = scimClientFactory.apply(base, token);
+                final ScimClient client = clientForTarget(t);
+                if (client == null) continue;
                 try {
                     switch (op) {
                         case CREATE -> {
@@ -398,7 +409,8 @@ public class ScimEventListenerProvider implements EventListenerProvider {
             }
         }
 
-        ScimClient client = scimClientFactory.apply(base, token);
+        ScimClient client = clientForTarget(t);
+        if (client == null) return;
 
         try {
             boolean changed = switch (action) {

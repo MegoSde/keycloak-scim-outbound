@@ -9,6 +9,8 @@ import java.net.http.*;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Optional;
+import org.keycloak.component.ComponentModel;
+import es.diegosr.keycloak_scim_outbound.ui.ScimTargetProviderFactory;
 
 /**
  * Minimal SCIM v2 client focused on Users resource.
@@ -22,19 +24,33 @@ public class ScimClient {
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
+    public static ScimClient forTarget(ComponentModel target) {
+        return new ScimClient(
+                ScimTargetProviderFactory.get(target, ScimTargetProviderFactory.CFG_BASE_URL, null),
+                ScimTargetProviderFactory.get(target, ScimTargetProviderFactory.CFG_TOKEN, null),
+                Duration.ofSeconds(8), 3,
+                ScimTargetProviderFactory.get(target, ScimTargetProviderFactory.CFG_TRUSTED_CERTIFICATES, null));
+    }
+
     public ScimClient(String baseUrl, String bearer) {
         this(baseUrl, bearer, Duration.ofSeconds(8), 3);
     }
 
     public ScimClient(String baseUrl, String bearer, Duration timeout, int maxRetries) {
+        this(baseUrl, bearer, timeout, maxRetries, null);
+    }
+
+    public ScimClient(String baseUrl, String bearer, Duration timeout, int maxRetries, String trustedCertificatesPem) {
         this.baseUrl = trimTrailingSlash(baseUrl);
         this.bearer = bearer;
         this.requestTimeout = timeout != null ? timeout : Duration.ofSeconds(8);
         this.maxRetries = Math.max(0, maxRetries);
-        this.http = HttpClient.newBuilder()
+        var builder = HttpClient.newBuilder()
                 .connectTimeout(this.requestTimeout)
-                .version(HttpClient.Version.HTTP_1_1)
-                .build();
+                .version(HttpClient.Version.HTTP_1_1);
+        var sslContext = ScimTls.context(trustedCertificatesPem);
+        if (sslContext != null) builder.sslContext(sslContext);
+        this.http = builder.build();
     }
 
     public boolean smokeTest() {
@@ -46,6 +62,52 @@ public class ScimClient {
             httpErr("smokeTest failed: %s", e.getMessage());
             return false;
         }
+    }
+
+    public record ConnectionTestResult(boolean success, String code, String message, Integer status) { }
+
+    /** A single read-only, authenticated request. No provisioning and no retries. */
+    public ConnectionTestResult testConnection() {
+        try {
+            var response = http.send(baseRequestBuilder("/Users?count=0&attributes=id").GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            int status = response.statusCode();
+            if (status == 401) return testFailure("UNAUTHORIZED", "The SCIM server rejected the saved token (HTTP 401).", status);
+            if (status == 403) return testFailure("FORBIDDEN", "The saved token does not have access to SCIM Users (HTTP 403).", status);
+            if (status == 404) return testFailure("NOT_FOUND", "SCIM Users was not found. Check the saved SCIM Base URL (HTTP 404).", status);
+            if (!is2xx(status)) return testFailure("HTTP_ERROR", "The SCIM server returned HTTP " + status + ".", status);
+            JsonNode body;
+            try { body = JSON.readTree(response.body()); }
+            catch (Exception e) { return testFailure("INVALID_RESPONSE", "The server did not return a SCIM ListResponse. Check the SCIM Base URL.", status); }
+            if (body == null || !body.isObject() || !body.path("totalResults").isIntegralNumber() || !body.path("totalResults").canConvertToInt()
+                    || body.path("totalResults").asInt() < 0
+                    || !body.path("schemas").isArray()
+                    || !java.util.stream.StreamSupport.stream(body.path("schemas").spliterator(), false)
+                            .anyMatch(schema -> schema.isTextual() && "urn:ietf:params:scim:api:messages:2.0:ListResponse".equals(schema.asText()))
+                    || (body.has("Resources") && !body.path("Resources").isArray())) {
+                return testFailure("INVALID_RESPONSE", "The server did not return a SCIM ListResponse. Check the SCIM Base URL.", status);
+            }
+            return new ConnectionTestResult(true, "OK",
+                    "The SCIM Users endpoint accepted the saved configuration (HTTP " + status + "). No users or groups were changed.", status);
+        } catch (javax.net.ssl.SSLException e) {
+            String detail = String.valueOf(e.getMessage()).toLowerCase(java.util.Locale.ROOT);
+            return detail.contains("subject alternative") || detail.contains("no name matching")
+                    ? testFailure("TLS_HOSTNAME", "The server certificate does not match the hostname in the SCIM Base URL.", null)
+                    : testFailure("TLS_ERROR", "TLS verification failed. Check the uploaded CA certificates, server certificate chain, and validity dates.", null);
+        } catch (HttpTimeoutException e) {
+            return testFailure("TIMEOUT", "The SCIM server did not respond before the timeout.", null);
+        } catch (java.net.ConnectException e) {
+            return testFailure("CONNECT_ERROR", "Could not connect to the SCIM server. Check the hostname, port, DNS and network access.", null);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return testFailure("INTERRUPTED", "The connection test was interrupted. Try again.", null);
+        } catch (Exception e) {
+            return testFailure("CONNECTION_ERROR", "Could not complete the SCIM request. Check the saved URL and network access.", null);
+        }
+    }
+
+    private static ConnectionTestResult testFailure(String code, String message, Integer status) {
+        return new ConnectionTestResult(false, code, message, status);
     }
 
     /** Find user by userName and return SCIM id if present. */

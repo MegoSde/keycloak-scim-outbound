@@ -1,6 +1,7 @@
 package es.diegosr.keycloak_scim_outbound.ui;
 
 import es.diegosr.keycloak_scim_outbound.ldapsync.ScimMembershipSync;
+import es.diegosr.keycloak_scim_outbound.http.ScimTls;
 
 import org.keycloak.component.ComponentModel;
 import org.keycloak.component.ComponentValidationException;
@@ -36,6 +37,7 @@ public class ScimTargetProviderFactory implements UserStorageProviderFactory<Sci
 
     /** Config keys stored in ComponentModel#getConfig(). */
     public static final String CFG_BASE_URL       = "baseUrl";
+    public static final String CFG_TRUSTED_CERTIFICATES = "trustedCertificatesPem";
     public static final String CFG_TOKEN          = "token";
     public static final String CFG_FILTER_GROUP   = "filterGroup";       // optional
 
@@ -73,6 +75,11 @@ public class ScimTargetProviderFactory implements UserStorageProviderFactory<Sci
             "SCIM Base URL (e.g. https://app.example.com/scim/v2).", true, "SCIM Base URL"),
         prop(ProviderConfigProperty.PASSWORD,     CFG_TOKEN,
             "SCIM Bearer token used to authenticate against the target.", true, "SCIM Token"),
+        prop(ProviderConfigProperty.FILE_TYPE, CFG_TRUSTED_CERTIFICATES,
+            "Optional PEM CA certificate or bundle (max 128 KiB, 16 certificates). When supplied, only these certificates "
+            + "are trusted for this SCIM target. Leave empty for default trust. Private keys are not supported. "
+            + "Clear and save to remove. Changes apply to subsequent SCIM operations without restart.",
+            false, "Trusted SCIM certificates (PEM)"),
         prop(ProviderConfigProperty.STRING_TYPE,  CFG_FILTER_GROUP,
             "Optional group filter. If set, only users in this Keycloak group will be provisioned.", false, "Filter Group (optional)"),
 
@@ -129,6 +136,13 @@ public class ScimTargetProviderFactory implements UserStorageProviderFactory<Sci
             throw new ComponentValidationException("SCIM Base URL must start with http:// or https://");
         }
 
+        String normalizedCertificates;
+        try {
+            normalizedCertificates = ScimTls.normalize(get(model, CFG_TRUSTED_CERTIFICATES, null));
+        } catch (IllegalArgumentException e) {
+            throw new ComponentValidationException(e.getMessage());
+        }
+
         String strategy = get(model, CFG_UNAME_STRATEGY, "username");
         switch (strategy) {
             case "username":
@@ -162,6 +176,9 @@ public class ScimTargetProviderFactory implements UserStorageProviderFactory<Sci
                 }
             }
         }
+        // Normalize only after all validation has succeeded.
+        if (normalizedCertificates.isEmpty()) model.getConfig().remove(CFG_TRUSTED_CERTIFICATES);
+        else model.getConfig().putSingle(CFG_TRUSTED_CERTIFICATES, normalizedCertificates);
     }
 
     /* ===== ImportSynchronization: triggered by the "Synchronize" buttons in the admin console =====

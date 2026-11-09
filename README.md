@@ -28,7 +28,10 @@ A lightweight **Keycloak extension** that provisions users and groups to externa
 mvn clean package
 ```
 
-This generates a `.jar` under:
+This builds the Java provider and its admin theme into a single JAR. Maven installs
+frontend tools locally under `target/`; the package build requires network access.
+
+The JAR is generated under:
 
 ```
 target/keycloak-scim-outbound-<version>.jar
@@ -68,6 +71,7 @@ Once deployed:
 | --------------------------- | --------------------------------------------------------------------- | -------- |
 | **SCIM Base URL**           | Base endpoint of your SCIM API, e.g. `https://app.example.com/scim/v2` | ✅        |
 | **SCIM Token**              | Bearer token for authenticating with the SCIM target                  | ✅        |
+| **Trusted SCIM certificates (PEM)** | Upload a PEM CA certificate or bundle to trust only those certificates for this target. Optional; empty uses JVM default trust. | ❌ |
 | **Filter Group (optional)** | Only users in this group will be provisioned                          | ❌        |
 | **userName Strategy**       | How to build SCIM `userName` (`username`, `email`, or `attribute`)    | ✅        |
 | **userName Attribute**      | Custom user attribute name (only if strategy = `attribute`)           | ❌        |
@@ -183,6 +187,8 @@ kc.sh start-dev --spi-events-listener-keycloak-scim-outbound-enabled=true
 ```
 keycloak-scim-outbound/
 ├── pom.xml
+├── src/main/keycloak-admin-theme/  # SCIM connection-test UI and frontend build
+├── src/main/resources/META-INF/keycloak-themes.json
 └── src/main/java/es/diegosr/keycloak_scim_outbound/
     ├── ScimEventListenerProvider.java
     ├── ScimEventListenerProviderFactory.java
@@ -242,6 +248,77 @@ Pending membership changes are flushed in two ways:
 - **On demand** — clicking **Synchronize all users** or **Synchronize changed users** on the SCIM outbound provider in User Federation triggers an immediate flush for that specific target.
 
 If a SCIM push fails (e.g. the target is temporarily unreachable), the pending marker is left in place and the push is retried on the next sweep.
+
+---
+
+## Custom HTTPS trust for a SCIM target
+
+In **User Federation → your SCIM outbound provider**, use **Trusted SCIM certificates (PEM)**
+to browse for a PEM certificate or bundle, then save. The certificate content is stored in
+that component's configuration in the Keycloak database, including realm exports; no file
+mount or container restart is needed. Upload public CA certificates only, never private keys.
+The maximum upload is 128 KiB with at most 16 currently valid X.509 certificates.
+
+When certificates are configured, the target trusts only the uploaded certificates.
+Other targets and Keycloak's inbound HTTPS configuration are unaffected. Hostname verification
+remains enabled. Replace the file and save to rotate trust; bundles allow old and new CA
+certificates during rotation. Clear the field and save to return to JVM default trust.
+Changes apply to newly created clients on subsequent operations, including user/group events,
+manual synchronization and the periodic LDAP sweep; operations already in flight retain their client.
+
+For migration from a JVM-wide truststore, upload the CA on each relevant SCIM target and verify
+SCIM communication before removing the `javax.net.ssl.trustStore*` settings and SCIM truststore
+mount. Check whether other integrations also depend on `KC_TRUSTSTORE_PATHS` before removing it.
+Keep Keycloak's own HTTPS certificate/key mounts.
+
+---
+
+## Test connection in the Admin Console
+
+The **Test connection** button on the SCIM provider form uses the **saved** URL, token,
+and target-specific certificates. Save edits before testing. The button is unavailable
+until the provider exists and while the form has unsaved changes.
+
+The server makes one authenticated `GET /Users?count=0&attributes=id` request and verifies
+that the response is a SCIM ListResponse. It does not create, update, delete, or synchronize
+users or groups. It reports rejected credentials, missing endpoints, unexpected responses,
+TLS verification failures and network failures without returning tokens or SCIM user data.
+A successful read confirms access to this endpoint; it does not prove permission to provision.
+The request uses an eight-second timeout and no retries. Only realm administrators with
+`manage-realm` may invoke the test.
+
+The **Test connection** button is included in the `scim-outbound` admin theme,
+which is packaged inside the same provider JAR by the existing Maven build:
+
+```bash
+mvn clean package
+```
+
+Maven downloads a local, pinned Node.js and npm under `target/`, then uses pinned pnpm
+to build the theme. No globally installed Node.js, pnpm, or container tooling is required.
+The first package build needs network access to download tools, upstream sources, and
+frontend dependencies. `mvn test` runs the Java tests without rebuilding the frontend.
+
+Deploy `target/keycloak-scim-outbound-<version>.jar` to Keycloak's `providers/` directory
+and run `kc.sh build` as usual. No separate theme files or image build are needed.
+Select `scim-outbound` under **Realm settings → Themes → Admin theme** in the realm used
+to log into the Admin Console (usually `master`). Remove any older separately deployed
+`themes/scim-outbound/` directory so it cannot shadow the theme bundled in the JAR.
+
+Theme sources live in `src/main/keycloak-admin-theme/`. The theme inherits Keycloak's
+standard appearance and patches only the custom SCIM provider form. The frontend build
+downloads upstream Keycloak **26.8.1**, pinned to its exact source revision, and uses that
+revision's dependency lockfile and TypeScript checks. The admin theme targets this server
+version independently of the Java SPI compilation version. Review `build.mjs` and rebuild
+for the new server version when upgrading Keycloak.
+
+The protected backend endpoint is:
+
+```text
+POST /admin/realms/{realm}/scim-outbound/{componentId}/test-connection
+```
+
+It accepts no configuration payload. Target lookup and permission checks happen server-side.
 
 ---
 

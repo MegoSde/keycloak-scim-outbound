@@ -1,0 +1,7 @@
+{
+  "name": "scim-outbound-keycloak-admin-theme",
+  "private": true,
+  "scripts": {
+    "build": "node build.mjs"
+  }
+}
