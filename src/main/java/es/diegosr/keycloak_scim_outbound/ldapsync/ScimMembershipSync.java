@@ -113,7 +113,14 @@ public final class ScimMembershipSync {
                 continue;
             }
 
-            ScimClient client = new ScimClient(base, token);
+            ScimClient client;
+            try {
+                client = ScimClient.forTarget(target);
+            } catch (IllegalArgumentException e) {
+                err("Target=%s invalid TLS configuration: %s. Pending entries retained.", target.getName(), e.getMessage());
+                failures += candidates.size();
+                continue;
+            }
 
             for (UserModel user : candidates.values()) {
                 usersScanned++;

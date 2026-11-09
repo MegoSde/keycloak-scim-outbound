@@ -132,7 +132,7 @@ class ScimEventListenerProviderDeleteTest {
         when(realm.getComponentsStream()).thenAnswer(ignored -> Stream.of(target));
 
         ScimEventListenerProvider provider = new ScimEventListenerProvider(
-                session, (baseUrl, token) -> client, () -> 1_000L);
+                session, targetModel -> client, () -> 1_000L);
         return new Fixture(provider, client);
     }
 

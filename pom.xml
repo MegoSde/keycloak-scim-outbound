@@ -64,10 +64,52 @@
       <version>5.12.0</version>
       <scope>test</scope>
     </dependency>
+    <!-- JAX-RS RuntimeDelegate for resource tests; supplied by Keycloak at runtime. -->
+    <dependency>
+      <groupId>org.jboss.resteasy</groupId>
+      <artifactId>resteasy-core</artifactId>
+      <version>6.2.12.Final</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
     <plugins>
+      <!-- Build and bundle the admin theme in the provider JAR during mvn package.
+           Java-only mvn test does not download or rebuild Keycloak's frontend. -->
+      <plugin>
+        <groupId>com.github.eirslett</groupId>
+        <artifactId>frontend-maven-plugin</artifactId>
+        <version>1.15.4</version>
+        <configuration>
+          <workingDirectory>src/main/keycloak-admin-theme</workingDirectory>
+          <installDirectory>${project.build.directory}/frontend</installDirectory>
+          <environmentVariables>
+            <SCIM_THEME_BUILD_DIRECTORY>${project.build.directory}</SCIM_THEME_BUILD_DIRECTORY>
+            <SCIM_THEME_OUTPUT_DIRECTORY>${project.build.outputDirectory}</SCIM_THEME_OUTPUT_DIRECTORY>
+            <npm_config_cache>${project.build.directory}/npm-cache</npm_config_cache>
+          </environmentVariables>
+        </configuration>
+        <executions>
+          <execution>
+            <id>install-frontend-tools</id>
+            <phase>prepare-package</phase>
+            <goals><goal>install-node-and-npm</goal></goals>
+            <configuration>
+              <nodeVersion>v22.22.0</nodeVersion>
+              <npmVersion>10.9.2</npmVersion>
+            </configuration>
+          </execution>
+          <execution>
+            <id>build-keycloak-admin-theme</id>
+            <phase>prepare-package</phase>
+            <goals><goal>npm</goal></goals>
+            <configuration>
+              <arguments>exec --yes --package=pnpm@11.1.1 -- pnpm run build</arguments>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
       <plugin>
         <artifactId>maven-compiler-plugin</artifactId>
         <version>3.14.1</version>
