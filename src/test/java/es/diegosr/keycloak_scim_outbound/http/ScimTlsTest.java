@@ -14,6 +14,18 @@ import java.nio.file.Files;
 import java.security.KeyStore;
 import java.time.Duration;
 import java.util.Base64;
+import es.diegosr.keycloak_scim_outbound.sync.ScimUserSync;
+import org.keycloak.models.KeycloakSession;
+import org.keycloak.models.RealmModel;
+import org.keycloak.models.UserModel;
+import org.keycloak.models.UserProvider;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ScimTlsTest {
@@ -78,10 +90,10 @@ class ScimTlsTest {
         var serverContext = SSLContext.getInstance("TLS");
         serverContext.init(keys.getKeyManagers(), null, null);
         var defaultContext = SSLContext.getDefault();
-        var server = HttpsServer.create(new java.net.InetSocketAddress("0.0.0.0", 0), 0);
+        var server = HttpsServer.create(new InetSocketAddress("0.0.0.0", 0), 0);
         server.setHttpsConfigurator(new HttpsConfigurator(serverContext));
         com.sun.net.httpserver.HttpHandler handler = exchange -> {
-            byte[] body = "{\"schemas\":[\"urn:ietf:params:scim:api:messages:2.0:ListResponse\"],\"totalResults\":0}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            byte[] body = "{\"schemas\":[\"urn:ietf:params:scim:api:messages:2.0:ListResponse\"],\"totalResults\":0}".getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, body.length);
             try (var output = exchange.getResponseBody()) { output.write(body); }
         };
@@ -108,4 +120,48 @@ class ScimTlsTest {
             assertSame(defaultContext, SSLContext.getDefault());
         } finally { server.stop(0); }
     }
+
+    @Test void fullSyncUsesTheTargetsUploadedCertificate() throws Exception {
+        KeyStore serverStore = store("full-sync");
+        var keys = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+        keys.init(serverStore, "test-password".toCharArray());
+        var serverContext = SSLContext.getInstance("TLS");
+        serverContext.init(keys.getKeyManagers(), null, null);
+        var defaultContext = SSLContext.getDefault();
+        var server = HttpsServer.create(new InetSocketAddress("localhost", 0), 0);
+        server.setHttpsConfigurator(new HttpsConfigurator(serverContext));
+        var creates = new AtomicInteger();
+        server.createContext("/Users", exchange -> {
+            boolean create = "POST".equals(exchange.getRequestMethod());
+            if (create) creates.incrementAndGet();
+            byte[] body = (create ? "{}" : "{\"totalResults\":0,\"Resources\":[]}")
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(create ? 201 : 200, body.length);
+            try (var output = exchange.getResponseBody()) { output.write(body); }
+        });
+        server.start();
+        try {
+            var target = new ComponentModel();
+            target.getConfig().putSingle("baseUrl", "https://localhost:" + server.getAddress().getPort());
+            target.getConfig().putSingle("token", "test");
+            target.getConfig().putSingle("trustedCertificatesPem", pem(serverStore));
+            var session = mock(KeycloakSession.class);
+            var realm = mock(RealmModel.class);
+            var users = mock(UserProvider.class);
+            var user = mock(UserModel.class);
+            when(session.users()).thenReturn(users);
+            when(user.getId()).thenReturn("never-synced");
+            when(user.getUsername()).thenReturn("alice");
+            when(users.searchForUserStream(realm, Map.of(), 0,
+                    ScimUserSync.PAGE_SIZE))
+                    .thenReturn(Stream.of(user));
+            var result = new ScimUserSync()
+                    .syncPage(session, realm, target, 0).result();
+            assertEquals(1, result.getAdded());
+            assertEquals(0, result.getFailed());
+            assertEquals(1, creates.get());
+            assertSame(defaultContext, SSLContext.getDefault());
+        } finally { server.stop(0); }
+    }
+
 }

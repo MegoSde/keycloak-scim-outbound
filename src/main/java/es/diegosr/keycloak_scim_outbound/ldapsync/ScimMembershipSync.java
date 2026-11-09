@@ -23,8 +23,8 @@ import java.util.Optional;
  * Invoked from two places:
  *   1. A 5-minute TimerProvider task (ScimEventListenerProviderFactory#postInit),
  *      scanning ALL SCIM targets in ALL realms.
- *   2. ScimTargetProviderFactory#sync / #syncSince (ImportSynchronization), triggered when
- *      an admin clicks "Synchronize all users" / "Synchronize changed users" on a
+ *   2. ScimTargetProviderFactory#syncSince (ImportSynchronization), triggered when
+ *      an admin clicks "Synchronize changed users" on a
  *      specific SCIM outbound federation provider in the console -- scoped to just
  *      that one componentId.
  *
